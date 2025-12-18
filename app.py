@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 import requests
 
 # ---------------- PAGE CONFIG ---------------- #
@@ -13,8 +12,8 @@ st.title("🔍 Reference → Google Scholar Search")
 
 st.markdown("""
 Paste references **one per line**.  
-Click **Open in Scholar** to search.  
-Tick **Reviewed** after checking the result.
+Click **Google Scholar** to open in a new tab.  
+Tick **Reviewed** once checked.
 """)
 
 # ---------------- INPUT ---------------- #
@@ -24,7 +23,7 @@ refs_text = st.text_area(
     height=250
 )
 
-# ---------------- SESSION STATE INIT ---------------- #
+# ---------------- SESSION STATE ---------------- #
 
 if "refs" not in st.session_state:
     st.session_state.refs = []
@@ -32,9 +31,9 @@ if "refs" not in st.session_state:
 if "reviewed" not in st.session_state:
     st.session_state.reviewed = {}
 
-# ---------------- PROCESS ---------------- #
+# ---------------- GENERATE ---------------- #
 
-if st.button("Generate Scholar Links"):
+if st.button("Generate Links"):
     st.session_state.refs = [
         r.strip() for r in refs_text.splitlines() if r.strip()
     ]
@@ -48,27 +47,28 @@ if st.session_state.refs:
 
     st.markdown("## 📑 References")
 
-    for i, ref in enumerate(st.session_state.refs, 1):
+    for i, ref in enumerate(st.session_state.refs):
 
         scholar_url = f"https://scholar.google.com/scholar?q={requests.utils.quote(ref)}"
 
-        col1, col2, col3 = st.columns([0.05, 0.75, 0.2])
+        # Inline layout
+        col_ref, col_link, col_check = st.columns([0.65, 0.2, 0.15])
 
-        with col1:
-            st.write(f"**{i}.**")
+        with col_ref:
+            st.write(f"**{i+1}.** {ref}")
 
-        with col2:
-            st.write(ref)
+        with col_link:
             st.markdown(
-                f'<a href="{scholar_url}" target="_blank">🔍 Open in Google Scholar</a>',
+                f'<a href="{scholar_url}" target="_blank">🔍 Google Scholar</a>',
                 unsafe_allow_html=True
             )
 
-        with col3:
-            st.session_state.reviewed[i-1] = st.checkbox(
+        with col_check:
+            st.session_state.reviewed[i] = st.checkbox(
                 "Reviewed",
-                value=st.session_state.reviewed.get(i-1, False),
-                key=f"rev_{i}"
+                value=st.session_state.reviewed.get(i, False),
+                key=f"rev_{i}",
+                label_visibility="collapsed"
             )
 
     reviewed_count = sum(st.session_state.reviewed.values())
