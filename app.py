@@ -9,77 +9,67 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🔍 Reference → Google Scholar Search Links")
+st.title("🔍 Reference → Google Scholar Search")
 
 st.markdown("""
 Paste references **one per line**.  
-Click **Search** to generate Google Scholar links.  
-Use the checkbox to **mark references you have reviewed**.
+Click **Open in Scholar** to search.  
+Tick **Reviewed** after checking the result.
 """)
 
 # ---------------- INPUT ---------------- #
 
 refs_text = st.text_area(
     "Paste references here",
-    height=250,
-    placeholder="Author A, Author B. Title. Journal. Year.\nAuthor C et al. Title. Journal. Year."
+    height=250
 )
+
+# ---------------- SESSION STATE INIT ---------------- #
+
+if "refs" not in st.session_state:
+    st.session_state.refs = []
+
+if "reviewed" not in st.session_state:
+    st.session_state.reviewed = {}
 
 # ---------------- PROCESS ---------------- #
 
-if st.button("Generate Google Scholar Links"):
+if st.button("Generate Scholar Links"):
+    st.session_state.refs = [
+        r.strip() for r in refs_text.splitlines() if r.strip()
+    ]
+    st.session_state.reviewed = {
+        i: False for i in range(len(st.session_state.refs))
+    }
 
-    refs = [r.strip() for r in refs_text.splitlines() if r.strip()]
+# ---------------- DISPLAY ---------------- #
 
-    if not refs:
-        st.warning("Please paste at least one reference.")
-        st.stop()
+if st.session_state.refs:
 
-    # Initialize session state
-    if "checked" not in st.session_state:
-        st.session_state.checked = {i: False for i in range(len(refs))}
+    st.markdown("## 📑 References")
 
-    rows = []
+    for i, ref in enumerate(st.session_state.refs, 1):
 
-    for i, ref in enumerate(refs, 1):
         scholar_url = f"https://scholar.google.com/scholar?q={requests.utils.quote(ref)}"
 
-        rows.append({
-            "No.": i,
-            "Reference": ref,
-            "Google Scholar": scholar_url,
-            "Reviewed": st.session_state.checked.get(i-1, False)
-        })
+        col1, col2, col3 = st.columns([0.05, 0.75, 0.2])
 
-    df = pd.DataFrame(rows)
+        with col1:
+            st.write(f"**{i}.**")
 
-    st.markdown("## 📑 Google Scholar Search Results")
+        with col2:
+            st.write(ref)
+            st.markdown(
+                f'<a href="{scholar_url}" target="_blank">🔍 Open in Google Scholar</a>',
+                unsafe_allow_html=True
+            )
 
-    # Render interactive table
-    edited_df = st.data_editor(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "No.": st.column_config.NumberColumn(width="small"),
-            "Reference": st.column_config.TextColumn(width="large"),
-            "Google Scholar": st.column_config.LinkColumn(
-                "Google Scholar",
-                display_text="🔍 Open in Scholar"
-            ),
-            "Reviewed": st.column_config.CheckboxColumn(
+        with col3:
+            st.session_state.reviewed[i-1] = st.checkbox(
                 "Reviewed",
-                help="Tick after opening the Scholar link"
-            ),
-        },
-        disabled=["No.", "Reference", "Google Scholar"],
-        key="editor"
-    )
+                value=st.session_state.reviewed.get(i-1, False),
+                key=f"rev_{i}"
+            )
 
-    # Persist checkbox state
-    for idx, row in edited_df.iterrows():
-        st.session_state.checked[idx] = row["Reviewed"]
-
-    # Summary
-    reviewed_count = sum(st.session_state.checked.values())
-    st.success(f"Reviewed {reviewed_count} / {len(refs)} references")
+    reviewed_count = sum(st.session_state.reviewed.values())
+    st.success(f"Reviewed {reviewed_count} / {len(st.session_state.refs)} references")
