@@ -1,18 +1,19 @@
 import streamlit as st
 import requests
+import urllib.parse
 
 # ---------------- PAGE CONFIG ---------------- #
 
 st.set_page_config(
-    page_title="Reference → Google Scholar Links",
+    page_title="Reference → Scholar & PMC Links",
     layout="wide"
 )
 
-st.title("🔍 Reference → Google Scholar Search")
+st.title("🔍 Reference → Google Scholar & PubMed Central")
 
 st.markdown("""
 Paste references **one per line**.  
-Click **Google Scholar** to open in a new tab.  
+Open **Google Scholar** or **PubMed Central** in a new tab.  
 Tick **Reviewed** once checked.
 """)
 
@@ -49,17 +50,32 @@ if st.session_state.refs:
 
     for i, ref in enumerate(st.session_state.refs):
 
-        scholar_url = f"https://scholar.google.com/scholar?q={requests.utils.quote(ref)}"
+        scholar_url = (
+            "https://scholar.google.com/scholar?q="
+            + urllib.parse.quote(ref)
+        )
 
-        # Inline layout
-        col_ref, col_link, col_check = st.columns([0.65, 0.2, 0.15])
+        pmc_url = (
+            "https://www.ncbi.nlm.nih.gov/pmc/?term="
+            + urllib.parse.quote(ref)
+        )
+
+        col_ref, col_scholar, col_pmc, col_check = st.columns(
+            [0.55, 0.18, 0.18, 0.09]
+        )
 
         with col_ref:
             st.write(f"**{i+1}.** {ref}")
 
-        with col_link:
+        with col_scholar:
             st.markdown(
                 f'<a href="{scholar_url}" target="_blank">🔍 Google Scholar</a>',
+                unsafe_allow_html=True
+            )
+
+        with col_pmc:
+            st.markdown(
+                f'<a href="{pmc_url}" target="_blank">🧬 PubMed Central</a>',
                 unsafe_allow_html=True
             )
 
