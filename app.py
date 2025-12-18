@@ -1,27 +1,54 @@
 import streamlit as st
-import requests
 import urllib.parse
 
 # ---------------- PAGE CONFIG ---------------- #
 
 st.set_page_config(
-    page_title="Reference → Scholar & PMC Links",
+    page_title="Reference Reviewer",
     layout="wide"
 )
 
-st.title("🔍 Reference → Google Scholar & PubMed Central")
+# ---------------- CUSTOM CSS ---------------- #
 
 st.markdown("""
-Paste references **one per line**.  
-Open **Google Scholar** or **PubMed Central** in a new tab.  
-Tick **Reviewed** once checked.
-""")
+<style>
+.ref-card {
+    padding: 14px;
+    border-radius: 10px;
+    border: 1px solid #e6e6e6;
+    margin-bottom: 10px;
+}
+.ref-reviewed {
+    background-color: #f0fff4;
+    border-color: #22c55e;
+}
+.ref-text {
+    font-size: 15px;
+}
+.ref-links a {
+    margin-right: 14px;
+    font-weight: 500;
+    text-decoration: none;
+}
+.ref-links a:hover {
+    text-decoration: underline;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------- HEADER ---------------- #
+
+st.title("📚 Reference Reviewer")
+st.caption(
+    "Paste references → Open Google Scholar / PubMed Central → Mark as reviewed"
+)
 
 # ---------------- INPUT ---------------- #
 
 refs_text = st.text_area(
-    "Paste references here",
-    height=250
+    "Paste references (one per line)",
+    height=220,
+    placeholder="Author A et al. Title. Journal. Year.\nAuthor B et al. Title. Journal. Year."
 )
 
 # ---------------- SESSION STATE ---------------- #
@@ -32,9 +59,9 @@ if "refs" not in st.session_state:
 if "reviewed" not in st.session_state:
     st.session_state.reviewed = {}
 
-# ---------------- GENERATE ---------------- #
+# ---------------- ACTION ---------------- #
 
-if st.button("Generate Links"):
+if st.button("🔗 Generate Search Links", use_container_width=True):
     st.session_state.refs = [
         r.strip() for r in refs_text.splitlines() if r.strip()
     ]
@@ -42,50 +69,65 @@ if st.button("Generate Links"):
         i: False for i in range(len(st.session_state.refs))
     }
 
-# ---------------- DISPLAY ---------------- #
+# ---------------- STATS ---------------- #
 
 if st.session_state.refs:
-
-    st.markdown("## 📑 References")
-
-    for i, ref in enumerate(st.session_state.refs):
-
-        scholar_url = (
-            "https://scholar.google.com/scholar?q="
-            + urllib.parse.quote(ref)
-        )
-
-        pmc_url = (
-            "https://www.ncbi.nlm.nih.gov/pmc/?term="
-            + urllib.parse.quote(ref)
-        )
-
-        col_ref, col_scholar, col_pmc, col_check = st.columns(
-            [0.55, 0.18, 0.18, 0.09]
-        )
-
-        with col_ref:
-            st.write(f"**{i+1}.** {ref}")
-
-        with col_scholar:
-            st.markdown(
-                f'<a href="{scholar_url}" target="_blank">🔍 Google Scholar</a>',
-                unsafe_allow_html=True
-            )
-
-        with col_pmc:
-            st.markdown(
-                f'<a href="{pmc_url}" target="_blank">🧬 PubMed Central</a>',
-                unsafe_allow_html=True
-            )
-
-        with col_check:
-            st.session_state.reviewed[i] = st.checkbox(
-                "Reviewed",
-                value=st.session_state.reviewed.get(i, False),
-                key=f"rev_{i}",
-                label_visibility="collapsed"
-            )
-
     reviewed_count = sum(st.session_state.reviewed.values())
-    st.success(f"Reviewed {reviewed_count} / {len(st.session_state.refs)} references")
+    total = len(st.session_state.refs)
+
+    st.markdown(
+        f"### ✅ Reviewed **{reviewed_count} / {total}** references"
+    )
+
+# ---------------- DISPLAY ---------------- #
+
+for i, ref in enumerate(st.session_state.refs):
+
+    scholar_url = (
+        "https://scholar.google.com/scholar?q="
+        + urllib.parse.quote(ref)
+    )
+
+    pmc_url = (
+        "https://www.ncbi.nlm.nih.gov/pmc/?term="
+        + urllib.parse.quote(ref)
+    )
+
+    reviewed = st.session_state.reviewed.get(i, False)
+    card_class = "ref-card ref-reviewed" if reviewed else "ref-card"
+
+    st.markdown(f'<div class="{card_class}">', unsafe_allow_html=True)
+
+    col_ref, col_links, col_check = st.columns([0.6, 0.25, 0.15])
+
+    with col_ref:
+        st.markdown(
+            f'<div class="ref-text"><b>{i+1}.</b> {ref}</div>',
+            unsafe_allow_html=True
+        )
+
+    with col_links:
+        st.markdown(
+            f'''
+            <div class="ref-links">
+                <a href="{scholar_url}" target="_blank">🔍 Google Scholar</a>
+                <a href="{pmc_url}" target="_blank">🧬 PubMed Central</a>
+            </div>
+            ''',
+            unsafe_allow_html=True
+        )
+
+    with col_check:
+        st.session_state.reviewed[i] = st.checkbox(
+            "Reviewed",
+            value=reviewed,
+            key=f"rev_{i}",
+            label_visibility="collapsed"
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- EMPTY STATE ---------------- #
+
+if not st.session_state.refs:
+    st.info("Paste references above and click **Generate Search Links** to begin.")
