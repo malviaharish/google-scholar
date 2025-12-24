@@ -161,6 +161,32 @@ if st.button("🔍 Process"):
     lines=[l.strip() for l in input_text.splitlines() if l.strip()]
     prog=st.progress(0)
 
+st.markdown(
+    """
+    <style>
+    table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    th, td {
+        text-align: center !important;
+        vertical-align: middle !important;
+        padding: 8px;
+    }
+    th {
+        background-color: #f1f5f9;
+        font-weight: 700;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    df.to_html(escape=False, index=False),
+    unsafe_allow_html=True
+)
+
     for i,x in enumerate(lines):
         rec={
             "Input":x,"Title":"","Journal_Details":"","Year":"",
