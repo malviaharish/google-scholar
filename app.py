@@ -10,7 +10,7 @@ from urllib.parse import quote, urljoin
 
 # ================= CONFIG ================= #
 
-UNPAYWALL_EMAIL = "your_email@institute.edu"   # <-- REQUIRED
+UNPAYWALL_EMAIL = "your_email@institute.edu"   # REQUIRED
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
@@ -29,16 +29,6 @@ input_text = st.text_area(
     "Paste DOI / PMID / PMCID / Reference (one per line)",
     height=220
 )
-
-# ================= CSS ================= #
-
-st.markdown("""
-<style>
-table { width:100%; border-collapse:collapse; }
-th, td { text-align:center; padding:8px; vertical-align:middle; }
-th { background:#f1f5f9; font-weight:700; }
-</style>
-""", unsafe_allow_html=True)
 
 # ================= HELPERS ================= #
 
@@ -114,7 +104,7 @@ def unpaywall(doi):
 def extract_pdf(page):
     r = requests.get(page, headers=HEADERS, timeout=20)
     soup = BeautifulSoup(r.text, "lxml")
-    m = soup.find("meta", attrs={"name": "citation_pdf_url"})
+    m = soup.find("meta", attrs={"name":"citation_pdf_url"})
     if m:
         return m["content"]
     for a in soup.find_all("a", href=True):
@@ -126,12 +116,12 @@ def download_pdf(url, fname):
     r = requests.get(url, headers=HEADERS, timeout=30)
     if r.status_code == 200 and "pdf" in r.headers.get("Content-Type",""):
         (DOWNLOAD_DIR / fname).write_bytes(r.content)
-        return "Downloaded"
-    return "Failed"
+        return True
+    return False
 
 def make_ris(df):
-    out = []
-    for _, r in df.iterrows():
+    out=[]
+    for _,r in df.iterrows():
         out += [
             "TY  - JOUR",
             f"TI  - {r['Title']}",
@@ -143,34 +133,34 @@ def make_ris(df):
                 out.append(f"AU  - {a.strip()}")
         if r["DOI"]: out.append(f"DO  - {r['DOI']}")
         if r["PMID"]: out.append(f"PM  - {r['PMID']}")
-        out += ["ER  -", ""]
+        out += ["ER  -",""]
     return "\n".join(out)
 
 # ================= MAIN ================= #
 
 if st.button("🔍 Process"):
 
-    rows = []
-    lines = [l.strip() for l in input_text.splitlines() if l.strip()]
-    prog = st.progress(0.0)
+    rows=[]
+    lines=[l.strip() for l in input_text.splitlines() if l.strip()]
+    prog=st.progress(0.0)
 
-    for i, x in enumerate(lines):
+    for i,x in enumerate(lines):
 
-        rec = {
-            "Input": x,
-            "Title": "",
-            "Journal": "",
-            "Year": "",
-            "Authors": "",
-            "DOI": "",
-            "PMID": "",
-            "PMCID": "",
-            "OA": "No",
-            "PDF": "",
-            "Status": "",
-            "Scholar": make_btn(f"https://scholar.google.com/scholar?q={quote(x)}", "Scholar"),
-            "PubMed": make_btn(f"https://pubmed.ncbi.nlm.nih.gov/?term={quote(x)}", "PubMed"),
-            "PMC": make_btn(f"https://www.ncbi.nlm.nih.gov/pmc/?term={quote(x)}", "PMC"),
+        rec={
+            "Input":x,
+            "Title":"",
+            "Journal":"",
+            "Year":"",
+            "Authors":"",
+            "DOI":"",
+            "PMID":"",
+            "PMCID":"",
+            "OA":"No",
+            "PDF":"",
+            "Status":"",
+            "Scholar":make_btn(f"https://scholar.google.com/scholar?q={quote(x)}","Scholar"),
+            "PubMed":make_btn(f"https://pubmed.ncbi.nlm.nih.gov/?term={quote(x)}","PubMed"),
+            "PMC":make_btn(f"https://www.ncbi.nlm.nih.gov/pmc/?term={quote(x)}","PMC"),
         }
 
         rec.update({k:v for k,v in europe_pmc(x).items() if v})
@@ -183,45 +173,64 @@ if st.button("🔍 Process"):
             rec.update(crossref(rec["DOI"]))
 
         if rec.get("DOI"):
-            up = unpaywall(rec["DOI"])
+            up=unpaywall(rec["DOI"])
             if up.get("is_oa"):
-                loc = up.get("best_oa_location") or {}
-                pdf = loc.get("url_for_pdf") or extract_pdf(loc.get("url",""))
+                loc=up.get("best_oa_location") or {}
+                pdf=loc.get("url_for_pdf") or extract_pdf(loc.get("url",""))
                 if pdf:
-                    rec["OA"] = "Yes"
-                    rec["PDF"] = make_btn(pdf, "PDF")
-                    rec["Status"] = download_pdf(pdf, rec["DOI"].replace("/","_") + ".pdf")
+                    rec["OA"]="Yes"
+                    rec["PDF"]=make_btn(pdf,"PDF")
+                    if download_pdf(pdf,rec["DOI"].replace("/","_")+".pdf"):
+                        rec["Status"]="Downloaded"
 
         rows.append(rec)
         prog.progress((i+1)/len(lines))
         time.sleep(0.2)
 
-    df = pd.DataFrame(rows)
+    df=pd.DataFrame(rows)
 
-    st.success("✅ Completed")
+    st.success("✅ Processing complete")
 
-    st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
+    # ================= SELECTION TABLE ================= #
 
-    # ================= EXPORT ================= #
+    st.subheader("📋 Select records to include in export")
 
-    csv_path = Path("results.csv")
-    ris_path = Path("references.ris")
+    selection = st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        selection_mode="multi-row",
+        on_select="rerun"
+    )
 
-    df.to_csv(csv_path, index=False)
-    ris_path.write_text(make_ris(df), encoding="utf-8")
+    selected_df = df.iloc[selection.selection.rows] if selection.selection.rows else pd.DataFrame()
 
-    final_zip = Path("literature_results.zip")
+    st.info(f"Selected records: {len(selected_df)}")
 
-    with zipfile.ZipFile(final_zip, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(csv_path, "results.csv")
-        z.write(ris_path, "references.ris")
-        for pdf in DOWNLOAD_DIR.glob("*.pdf"):
-            z.write(pdf, f"oa_pdfs/{pdf.name}")
+    # ================= EXPORT SELECTED ================= #
 
-    with open(final_zip, "rb") as f:
-        st.download_button(
-            "📦 Download ALL (CSV + RIS + PDFs)",
-            f,
-            file_name="literature_results.zip",
-            mime="application/zip"
-        )
+    if not selected_df.empty:
+
+        csv_path = Path("selected_results.csv")
+        ris_path = Path("selected_references.ris")
+        zip_path = Path("selected_exports.zip")
+
+        selected_df.to_csv(csv_path, index=False)
+        ris_path.write_text(make_ris(selected_df), encoding="utf-8")
+
+        with zipfile.ZipFile(zip_path,"w",zipfile.ZIP_DEFLATED) as z:
+            z.write(csv_path,"results.csv")
+            z.write(ris_path,"references.ris")
+            for _,r in selected_df.iterrows():
+                if r["DOI"]:
+                    pdf = DOWNLOAD_DIR / (r["DOI"].replace("/","_")+".pdf")
+                    if pdf.exists():
+                        z.write(pdf, f"oa_pdfs/{pdf.name}")
+
+        with open(zip_path,"rb") as f:
+            st.download_button(
+                "📦 Download SELECTED (CSV + RIS + PDFs)",
+                f,
+                file_name="selected_literature_exports.zip",
+                mime="application/zip"
+            )
