@@ -65,7 +65,103 @@ def ncbi_get(url, params):
     time.sleep(REQUEST_DELAY)
     r.raise_for_status()
     return r
+# ===================== FUNCTIONS ===================== #
 
+def clean_doi(doi: str) -> str:
+    doi = doi.strip()
+    doi = re.sub(r"^https?://(dx\.)?doi\.org/", "", doi)
+    return doi
+
+def query_unpaywall(doi: str):
+    url = f"https://api.unpaywall.org/v2/{doi}"
+    params = {"email": UNPAYWALL_EMAIL}
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return None
+
+def extract_pdf_from_html(page_url: str):
+    """Extract PDF link from publisher OA landing page"""
+    try:
+        r = requests.get(page_url, headers=HEADERS, timeout=20)
+        if r.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(r.text, "lxml")
+
+        # Best option: citation_pdf_url
+        meta = soup.find("meta", attrs={"name": "citation_pdf_url"})
+        if meta and meta.get("content"):
+            return meta["content"]
+
+        # Fallback: any .pdf link
+        for a in soup.find_all("a", href=True):
+            if ".pdf" in a["href"].lower():
+                return urljoin(page_url, a["href"])
+
+    except Exception:
+        pass
+
+    return None
+
+def get_pdf_or_landing(unpaywall_data):
+    locations = []
+
+    if unpaywall_data.get("best_oa_location"):
+        locations.append(unpaywall_data["best_oa_location"])
+
+    locations.extend(unpaywall_data.get("oa_locations", []))
+
+    for loc in locations:
+        if loc.get("url_for_pdf"):
+            return loc["url_for_pdf"], "pdf"
+
+        if loc.get("url"):
+            # PMC HTML → PDF
+            if "ncbi.nlm.nih.gov/pmc/articles" in loc["url"]:
+                return loc["url"].rstrip("/") + "/pdf", "pdf"
+            return loc["url"], "html"
+
+    return None, None
+
+def download_pdf(pdf_url: str, filepath: Path) -> str:
+    try:
+        r = requests.get(pdf_url, headers=HEADERS, timeout=30)
+        content_type = r.headers.get("Content-Type", "").lower()
+
+        if r.status_code == 200 and "pdf" in content_type:
+            with open(filepath, "wb") as f:
+                f.write(r.content)
+            return "Downloaded"
+        else:
+            return "Blocked or HTML"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+def zip_downloads(zip_path: Path):
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        for pdf in DOWNLOAD_DIR.glob("*.pdf"):
+            z.write(pdf, pdf.name)
+
+def make_clickable(url):
+    if not url:
+        return ""
+    return f"""
+    <a href="{url}" target="_blank"
+       style="
+           background:#2563eb;
+           color:white;
+           padding:6px 12px;
+           border-radius:6px;
+           text-decoration:none;
+           font-weight:600;
+       ">
+       Open PDF
+    </a>
+    """
 # ================= UNPAYWALL ================= #
 def query_unpaywall(doi):
     url = f"https://api.unpaywall.org/v2/{doi}"
