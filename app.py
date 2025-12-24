@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 from pathlib import Path
 import zipfile
+import re
 import time
 from bs4 import BeautifulSoup
 from urllib.parse import quote, urljoin
@@ -21,8 +22,8 @@ HEADERS = {
 # ================= UI ================= #
 
 st.set_page_config("Literature OA Downloader", layout="wide")
-st.title("📚 Reference / DOI → OA PDF Downloader")
-st.caption("Europe PMC + PMC + Crossref + Unpaywall | 100% Legal OA")
+st.title("📚 Reference / DOI → Open Access PDF Downloader")
+st.caption("Europe PMC • PMC • Crossref • Unpaywall | 100% Legal Open Access")
 
 input_text = st.text_area(
     "Paste DOI / PMID / PMCID / Reference (one per line)",
@@ -34,36 +35,41 @@ input_text = st.text_area(
 st.markdown("""
 <style>
 table { width:100%; border-collapse:collapse; }
-th, td { text-align:center !important; padding:8px; vertical-align:middle; }
+th, td { 
+    text-align:center !important; 
+    padding:8px; 
+    vertical-align:middle; 
+}
 th { background:#f1f5f9; font-weight:700; }
 </style>
 """, unsafe_allow_html=True)
 
-# ================= ICON BUTTON ================= #
+# ================= HELPERS ================= #
 
-def make_icon_btn(url, icon, tooltip, color):
+def make_btn(url, label, color="#2563eb"):
     if not url:
         return ""
     return f"""
-    <a href="{url}" target="_blank" title="{tooltip}"
+    <a href="{url}" target="_blank"
        style="
        display:inline-flex;
        align-items:center;
        justify-content:center;
-       width:34px;
-       height:34px;
-       border-radius:50%;
+       gap:6px;
+       padding:6px 14px;
+       margin:2px;
+       border-radius:999px;
        background:{color};
        color:white;
-       font-size:16px;
+       font-weight:600;
        text-decoration:none;
-       box-shadow:0 1px 3px rgba(0,0,0,0.3);
+       font-size:13px;
        ">
-       {icon}
+       {label}
     </a>
     """
 
-# ================= API HELPERS ================= #
+# ================= EUROPE PMC ================= #
 
 def europe_pmc(query):
     r = requests.get(
@@ -85,6 +91,8 @@ def europe_pmc(query):
         "PMCID": h.get("pmcid","")
     }
 
+# ================= ID CROSSWALK ================= #
+
 def id_crosswalk(val):
     r = requests.get(
         "https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/",
@@ -101,6 +109,8 @@ def id_crosswalk(val):
         "DOI": r0.get("doi","")
     }
 
+# ================= CROSSREF ================= #
+
 def crossref(doi):
     r = requests.get(f"https://api.crossref.org/works/{doi}", timeout=15)
     if r.status_code != 200:
@@ -116,6 +126,8 @@ def crossref(doi):
         )
     }
 
+# ================= UNPAYWALL ================= #
+
 def unpaywall(doi):
     r = requests.get(
         f"https://api.unpaywall.org/v2/{doi}",
@@ -125,6 +137,8 @@ def unpaywall(doi):
     return r.json() if r.status_code == 200 else {}
 
 def extract_pdf(page):
+    if not page:
+        return None
     r = requests.get(page, headers=HEADERS, timeout=20)
     soup = BeautifulSoup(r.text, "lxml")
     m = soup.find("meta", attrs={"name": "citation_pdf_url"})
@@ -141,6 +155,8 @@ def download_pdf(url, fname):
         (DOWNLOAD_DIR / fname).write_bytes(r.content)
         return "Downloaded"
     return "Failed"
+
+# ================= RIS ================= #
 
 def make_ris(df):
     out = []
@@ -181,17 +197,20 @@ if st.button("🔍 Process"):
             "OA": "No",
             "PDF": "",
             "Status": "",
-            "🎓": make_icon_btn(
+            "Scholar": make_btn(
                 f"https://scholar.google.com/scholar?q={quote(x)}",
-                "🎓", "Google Scholar", "#1a73e8"
+                "🎓 Scholar",
+                "#1a73e8"
             ),
-            "🧬": make_icon_btn(
+            "PubMed": make_btn(
                 f"https://pubmed.ncbi.nlm.nih.gov/?term={quote(x)}",
-                "🧬", "PubMed", "#059669"
+                "🧬 PubMed",
+                "#059669"
             ),
-            "📖": make_icon_btn(
+            "PMC": make_btn(
                 f"https://www.ncbi.nlm.nih.gov/pmc/?term={quote(x)}",
-                "📖", "PubMed Central", "#7c3aed"
+                "📖 PMC",
+                "#7c3aed"
             ),
         }
 
@@ -211,9 +230,10 @@ if st.button("🔍 Process"):
                 pdf = loc.get("url_for_pdf") or extract_pdf(loc.get("url",""))
                 if pdf:
                     rec["OA"] = "Yes"
-                    rec["PDF"] = make_icon_btn(pdf, "📄", "Open PDF", "#dc2626")
+                    rec["PDF"] = make_btn(pdf, "📄 PDF", "#dc2626")
                     rec["Status"] = download_pdf(
-                        pdf, rec["DOI"].replace("/","_") + ".pdf"
+                        pdf,
+                        rec["DOI"].replace("/","_") + ".pdf"
                     )
 
         rows.append(rec)
@@ -223,6 +243,7 @@ if st.button("🔍 Process"):
     df = pd.DataFrame(rows)
 
     st.success("✅ Completed")
+
     st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
 
     # ================= EXPORT ================= #
