@@ -197,7 +197,7 @@ if st.button("🔍 Process"):
             "OA": "No",
             "PDF": "",
             "Status": "",
-            "Scholar": make_btn(
+            "Google Scholar": make_btn(
                 f"https://scholar.google.com/scholar?q={quote(x)}",
                 "🎓 Scholar",
                 "#1a73e8"
