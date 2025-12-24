@@ -199,17 +199,17 @@ if st.button("🔍 Process"):
             "Status": "",
             "Google Scholar": make_btn(
                 f"https://scholar.google.com/scholar?q={quote(x)}",
-                "🎓 Scholar",
+                "Scholar",
                 "#1a73e8"
             ),
             "PubMed": make_btn(
                 f"https://pubmed.ncbi.nlm.nih.gov/?term={quote(x)}",
-                "🧬 PubMed",
+                "PubMed",
                 "#059669"
             ),
             "PMC": make_btn(
                 f"https://www.ncbi.nlm.nih.gov/pmc/?term={quote(x)}",
-                "📖 PMC",
+                "PMC",
                 "#7c3aed"
             ),
         }
