@@ -14,16 +14,12 @@ UNPAYWALL_EMAIL = "your_email@institute.edu"   # REQUIRED
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-PDF_DIR = DOWNLOAD_DIR
-
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     "Accept": "application/pdf,text/html"
 }
 
-REQUEST_DELAY = 0.34  # for safe NCBI queries
-
-# ===================== UI ===================== #
+# ===================== STREAMLIT UI ===================== #
 
 st.set_page_config(
     page_title="Reference / DOI → OA PDF Downloader",
@@ -31,7 +27,7 @@ st.set_page_config(
 )
 
 st.title("📚 Reference / DOI → Open Access PDF Downloader")
-st.caption("Unpaywall • PubMed Central • Google Scholar | Legal Open Access only")
+st.caption("Downloads **legal Open Access PDFs only** using Unpaywall, PMC & publisher OA pages")
 
 input_text = st.text_area(
     "Paste References OR DOIs (one per line)",
@@ -56,7 +52,7 @@ def query_unpaywall(doi: str):
         r = requests.get(url, params=params, timeout=15)
         if r.status_code == 200:
             return r.json()
-    except:
+    except Exception:
         pass
     return None
 
@@ -65,14 +61,16 @@ def extract_pdf_from_html(page_url: str):
         r = requests.get(page_url, headers=HEADERS, timeout=20)
         if r.status_code != 200:
             return None
+
         soup = BeautifulSoup(r.text, "lxml")
         meta = soup.find("meta", attrs={"name": "citation_pdf_url"})
         if meta and meta.get("content"):
             return meta["content"]
+
         for a in soup.find_all("a", href=True):
             if ".pdf" in a["href"].lower():
                 return urljoin(page_url, a["href"])
-    except:
+    except Exception:
         pass
     return None
 
@@ -81,6 +79,7 @@ def get_pdf_or_landing(unpaywall_data):
     if unpaywall_data.get("best_oa_location"):
         locations.append(unpaywall_data["best_oa_location"])
     locations.extend(unpaywall_data.get("oa_locations", []))
+
     for loc in locations:
         if loc.get("url_for_pdf"):
             return loc["url_for_pdf"], "pdf"
@@ -111,17 +110,11 @@ def zip_downloads(zip_path: Path):
 def make_clickable(url):
     if not url:
         return ""
-    return f"""<a href="{url}" target="_blank"
-       style="background:#2563eb;color:white;padding:6px 12px;border-radius:6px;text-decoration:none;font-weight:600;">
-       Open PDF
-    </a>"""
-
-# ===================== PMC FUNCTIONS ===================== #
+    return f'<a href="{url}" target="_blank" style="background:#2563eb;color:white;padding:6px 12px;border-radius:6px;text-decoration:none;font-weight:600;">Open PDF</a>'
 
 def ncbi_get(url, params):
-    params["email"] = UNPAYWALL_EMAIL
     r = requests.get(url, params=params, timeout=30)
-    time.sleep(REQUEST_DELAY)
+    time.sleep(0.34)
     r.raise_for_status()
     return r
 
@@ -140,8 +133,8 @@ def pmc_metadata(pmcid):
     )
     doc = r.json()["result"][pmcid]
     return {
-        "Title": doc.get("title"),
-        "Journal": doc.get("fulljournalname"),
+        "Title": doc.get("title", ""),
+        "Journal": doc.get("fulljournalname", ""),
         "Year": doc.get("pubdate", "")[:4],
         "DOI": doc.get("elocationid", "").replace("doi:", ""),
         "PMCID": f"PMC{pmcid}"
@@ -149,20 +142,19 @@ def pmc_metadata(pmcid):
 
 def download_pmc_pdf(pmcid):
     url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/pdf/"
-    path = PDF_DIR / f"{pmcid}.pdf"
+    path = DOWNLOAD_DIR / f"{pmcid}.pdf"
     r = requests.get(url, headers=HEADERS, timeout=30)
     if r.status_code == 200 and "pdf" in r.headers.get("Content-Type", ""):
         path.write_bytes(r.content)
         return True
     return False
 
-# ===================== PROCESS ===================== #
+# ===================== MAIN LOGIC ===================== #
 
 if st.button("🔍 Process"):
 
     lines = [l.strip() for l in input_text.splitlines() if l.strip()]
     results = []
-
     progress = st.progress(0)
 
     for i, item in enumerate(lines):
@@ -176,12 +168,13 @@ if st.button("🔍 Process"):
             "DOI": "",
             "PMCID": "",
             "OA": "No",
-            "PDF": "",
+            "PDF_Link": "",
+            "Download_Status": "",
             "Scholar": f"https://scholar.google.com/scholar?q={quote(item)}",
             "PMC_Search": f"https://www.ncbi.nlm.nih.gov/pmc/?term={quote(item)}"
         }
 
-        # ---------- DOI FLOW ----------
+        # ---------- DOI Flow ----------
         if is_doi(item):
             doi = clean_doi(item)
             record["DOI"] = doi
@@ -189,18 +182,15 @@ if st.button("🔍 Process"):
             if data and data.get("is_oa"):
                 url, url_type = get_pdf_or_landing(data)
                 if url:
-                    pdf_file = PDF_DIR / f"{doi.replace('/', '_')}.pdf"
                     record["OA"] = "Yes"
-                    record["PDF"] = str(pdf_file)
+                    pdf_file = DOWNLOAD_DIR / f"{doi.replace('/', '_')}.pdf"
                     if url_type == "pdf":
-                        record["PDF"] = str(pdf_file)
+                        record["PDF_Link"] = url
                         record["Download_Status"] = download_pdf(url, pdf_file)
-                        record["Source"] = "Direct PDF"
                     else:
-                        record["Source"] = "Publisher OA Page"
                         extracted_pdf = extract_pdf_from_html(url)
                         if extracted_pdf:
-                            record["PDF_URL"] = extracted_pdf
+                            record["PDF_Link"] = extracted_pdf
                             record["Download_Status"] = download_pdf(extracted_pdf, pdf_file)
                         else:
                             record["Download_Status"] = "OA page but PDF not found"
@@ -208,8 +198,7 @@ if st.button("🔍 Process"):
                     record["Download_Status"] = "OA but no usable link"
             else:
                 record["Download_Status"] = "Not Open Access"
-
-        # ---------- REFERENCE FLOW ----------
+        # ---------- Reference Flow ----------
         else:
             pmcid = pmc_search(item)
             if pmcid:
@@ -217,51 +206,55 @@ if st.button("🔍 Process"):
                 record.update(meta)
                 if download_pmc_pdf(meta["PMCID"]):
                     record["OA"] = "Yes"
-                    record["PDF"] = str(PDF_DIR / f"{meta['PMCID']}.pdf")
+                    record["PDF_Link"] = str(DOWNLOAD_DIR / f"{meta['PMCID']}.pdf")
+                    record["Download_Status"] = "Downloaded"
+                else:
+                    record["Download_Status"] = "PDF not available"
 
         results.append(record)
         progress.progress((i + 1) / len(lines))
 
-    st.session_state.results = results
+    df = pd.DataFrame(results)
 
-# ===================== DISPLAY ===================== #
+    # Ensure all columns exist
+    columns = ["Input", "Type", "Title", "Journal", "Year", "DOI", "PMCID", "OA", "PDF_Link", "Download_Status"]
+    df = df.reindex(columns=columns, fill_value="")
 
-if st.session_state.results:
-
-    df = pd.DataFrame(st.session_state.results)
-    df["PDF_Link"] = df["PDF"].apply(make_clickable)
+    # Create clickable PDF column
+    df["PDF_Link"] = df["PDF_Link"].apply(make_clickable)
 
     st.success("✅ Processing complete")
-    st.markdown(
-        df[["Input", "Type", "Title", "Journal", "Year", "DOI", "PMCID", "OA", "PDF_Link", "Download_Status"]]
-        .to_html(escape=False, index=False),
-        unsafe_allow_html=True
-    )
 
-    # ===================== EXPORTS ===================== #
+    # Display table
+    st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
+
+    # Export CSV
+    csv_data = df.to_csv(index=False).encode("utf-8")
     st.download_button(
-        "⬇️ Download CSV",
-        df.drop(columns=["PDF_Link"]).to_csv(index=False).encode("utf-8"),
+        "⬇️ Download CSV Report",
+        csv_data,
         "oa_results.csv",
         "text/csv"
     )
 
+    # Export ZIP of PDFs
     zip_path = Path("oa_pdfs.zip")
     zip_downloads(zip_path)
     if zip_path.exists():
         with open(zip_path, "rb") as f:
             st.download_button(
-                "📦 Download PDFs (ZIP)",
+                "📦 Download All PDFs (ZIP)",
                 f,
                 file_name="oa_pdfs.zip",
                 mime="application/zip"
             )
 
 # ===================== FOOTER ===================== #
+
 st.markdown(
     """
     ---
-    **Sources:** Unpaywall • PubMed Central • Google Scholar  
-    **Compliance:** Legal Open Access only
+    **Sources:** Unpaywall • PubMed Central • Google Scholar • Publisher OA  
+    **Compliance:** 100% Legal Open Access (No Sci-Hub / Anna’s Archive)
     """
 )
