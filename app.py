@@ -10,7 +10,7 @@ from urllib.parse import quote, urljoin
 
 # ================= CONFIG ================= #
 
-UNPAYWALL_EMAIL = "your_email@institute.edu"   # <-- REQUIRED
+UNPAYWALL_EMAIL = "your_email@institute.edu"   # REQUIRED
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
@@ -22,8 +22,8 @@ HEADERS = {
 # ================= UI ================= #
 
 st.set_page_config("Literature OA Downloader", layout="wide")
-st.title("📚 Reference / DOI → OA PDF Downloader")
-st.caption("Europe PMC + PMC + Crossref + Unpaywall | 100% Legal OA")
+st.title("📚 Reference / DOI → Open Access PDF Downloader")
+st.caption("Europe PMC • PMC • Crossref • Unpaywall | 100% Legal Open Access")
 
 input_text = st.text_area(
     "Paste DOI / PMID / PMCID / Reference (one per line)",
@@ -35,22 +35,41 @@ input_text = st.text_area(
 st.markdown("""
 <style>
 table { width:100%; border-collapse:collapse; }
-th, td { text-align:center; padding:8px; vertical-align:middle; }
+th, td { 
+    text-align:center !important; 
+    padding:8px; 
+    vertical-align:middle; 
+}
 th { background:#f1f5f9; font-weight:700; }
 </style>
 """, unsafe_allow_html=True)
 
 # ================= HELPERS ================= #
 
-def make_btn(url, label):
+def make_btn(url, label, color="#2563eb"):
     if not url:
         return ""
     return f"""
     <a href="{url}" target="_blank"
-    style="background:#2563eb;color:white;padding:6px 12px;
-    border-radius:6px;text-decoration:none;font-weight:600;">
-    {label}</a>
+       style="
+       display:inline-flex;
+       align-items:center;
+       justify-content:center;
+       gap:6px;
+       padding:6px 14px;
+       margin:2px;
+       border-radius:999px;
+       background:{color};
+       color:white;
+       font-weight:600;
+       text-decoration:none;
+       font-size:13px;
+       ">
+       {label}
+    </a>
     """
+
+# ================= EUROPE PMC ================= #
 
 def europe_pmc(query):
     r = requests.get(
@@ -72,6 +91,8 @@ def europe_pmc(query):
         "PMCID": h.get("pmcid","")
     }
 
+# ================= ID CROSSWALK ================= #
+
 def id_crosswalk(val):
     r = requests.get(
         "https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/",
@@ -88,6 +109,8 @@ def id_crosswalk(val):
         "DOI": r0.get("doi","")
     }
 
+# ================= CROSSREF ================= #
+
 def crossref(doi):
     r = requests.get(f"https://api.crossref.org/works/{doi}", timeout=15)
     if r.status_code != 200:
@@ -103,6 +126,8 @@ def crossref(doi):
         )
     }
 
+# ================= UNPAYWALL ================= #
+
 def unpaywall(doi):
     r = requests.get(
         f"https://api.unpaywall.org/v2/{doi}",
@@ -112,6 +137,8 @@ def unpaywall(doi):
     return r.json() if r.status_code == 200 else {}
 
 def extract_pdf(page):
+    if not page:
+        return None
     r = requests.get(page, headers=HEADERS, timeout=20)
     soup = BeautifulSoup(r.text, "lxml")
     m = soup.find("meta", attrs={"name": "citation_pdf_url"})
@@ -128,6 +155,8 @@ def download_pdf(url, fname):
         (DOWNLOAD_DIR / fname).write_bytes(r.content)
         return "Downloaded"
     return "Failed"
+
+# ================= RIS ================= #
 
 def make_ris(df):
     out = []
@@ -168,9 +197,21 @@ if st.button("🔍 Process"):
             "OA": "No",
             "PDF": "",
             "Status": "",
-            "Scholar": make_btn(f"https://scholar.google.com/scholar?q={quote(x)}", "Scholar"),
-            "PubMed": make_btn(f"https://pubmed.ncbi.nlm.nih.gov/?term={quote(x)}", "PubMed"),
-            "PMC": make_btn(f"https://www.ncbi.nlm.nih.gov/pmc/?term={quote(x)}", "PMC"),
+            "Scholar": make_btn(
+                f"https://scholar.google.com/scholar?q={quote(x)}",
+                "🎓 Scholar",
+                "#1a73e8"
+            ),
+            "PubMed": make_btn(
+                f"https://pubmed.ncbi.nlm.nih.gov/?term={quote(x)}",
+                "🧬 PubMed",
+                "#059669"
+            ),
+            "PMC": make_btn(
+                f"https://www.ncbi.nlm.nih.gov/pmc/?term={quote(x)}",
+                "📖 PMC",
+                "#7c3aed"
+            ),
         }
 
         rec.update({k:v for k,v in europe_pmc(x).items() if v})
@@ -189,8 +230,11 @@ if st.button("🔍 Process"):
                 pdf = loc.get("url_for_pdf") or extract_pdf(loc.get("url",""))
                 if pdf:
                     rec["OA"] = "Yes"
-                    rec["PDF"] = make_btn(pdf, "PDF")
-                    rec["Status"] = download_pdf(pdf, rec["DOI"].replace("/","_") + ".pdf")
+                    rec["PDF"] = make_btn(pdf, "📄 PDF", "#dc2626")
+                    rec["Status"] = download_pdf(
+                        pdf,
+                        rec["DOI"].replace("/","_") + ".pdf"
+                    )
 
         rows.append(rec)
         prog.progress((i+1)/len(lines))
