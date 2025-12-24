@@ -1,96 +1,98 @@
 import streamlit as st
 import requests
 import pandas as pd
-import os
 import time
+import re
 import zipfile
 from pathlib import Path
 from urllib.parse import quote
+from bs4 import BeautifulSoup
 
 # ================= PAGE CONFIG ================= #
 st.set_page_config(
-    page_title="Reference → PMC OA Downloader",
+    page_title="Reference / DOI → OA PDF Downloader",
     layout="wide"
 )
 
-# ================= NCBI CONFIG ================= #
-NCBI_API_KEY = st.secrets.get("NCBI_API_KEY", os.getenv("NCBI_API_KEY"))
-NCBI_EMAIL = "your_email@institute.edu"
+# ================= CONFIG ================= #
+NCBI_API_KEY = st.secrets.get("NCBI_API_KEY")
+UNPAYWALL_EMAIL = st.secrets.get("UNPAYWALL_EMAIL")
 
-REQUEST_DELAY = 0.34  # NCBI safe (~3 requests/sec with API key)
+REQUEST_DELAY = 0.34  # NCBI safe with API key
 
-BASE_DIR = Path("pmc_output")
+BASE_DIR = Path("output")
 PDF_DIR = BASE_DIR / "pdfs"
 BASE_DIR.mkdir(exist_ok=True)
 PDF_DIR.mkdir(exist_ok=True)
 
-# ================= SESSION STATE ================= #
-if "refs" not in st.session_state:
-    st.session_state.refs = []
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/pdf,text/html"
+}
 
-if "reviewed" not in st.session_state:
-    st.session_state.reviewed = {}
+# ================= SESSION ================= #
+if "items" not in st.session_state:
+    st.session_state.items = []
 
-if "metadata" not in st.session_state:
-    st.session_state.metadata = {}
+if "results" not in st.session_state:
+    st.session_state.results = []
 
-# ================= STYLES ================= #
-st.markdown(
-    """
-    <style>
-    .ref-card {
-        padding: 1rem;
-        border-radius: 12px;
-        border: 1px solid #e5e7eb;
-        background-color: #ffffff;
-        margin-bottom: 0.75rem;
-    }
-    .links a {
-        margin-right: 1.2rem;
-        font-weight: 600;
-        text-decoration: none;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-# ================= HEADER ================= #
-st.title("📚 Reference → PMC Open-Access Downloader")
+# ================= UI ================= #
+st.title("📚 Reference / DOI → Open Access PDF Downloader")
 st.caption(
-    "Bulk OA detection • PDF download • Metadata fetch • DOI mapping • ZIP export"
+    "Unpaywall • PubMed Central • Google Scholar | Legal Open Access only"
 )
 
-# ================= INPUT ================= #
-refs_text = st.text_area(
-    "Paste references (one per line)",
+input_text = st.text_area(
+    "Paste References OR DOIs (one per line)",
     height=220,
-    placeholder="Author A et al. Title. Journal. Year."
+    placeholder="Author A et al. Title. Journal. Year.\n10.1000/j.jmb.2020.01.001"
 )
 
-if st.button("🔍 Process References"):
-    st.session_state.refs = [r.strip() for r in refs_text.splitlines() if r.strip()]
-    st.session_state.reviewed = {i: False for i in range(len(st.session_state.refs))}
-    st.session_state.metadata = {}
+# ================= HELPERS ================= #
+def is_doi(text):
+    return bool(re.search(r"10\.\d{4,9}/", text))
 
-# ================= PMC FUNCTIONS ================= #
+def clean_doi(doi):
+    return re.sub(r"^https?://(dx\.)?doi\.org/", "", doi.strip())
+
 def ncbi_get(url, params):
     params["api_key"] = NCBI_API_KEY
-    params["email"] = NCBI_EMAIL
+    params["email"] = UNPAYWALL_EMAIL
     r = requests.get(url, params=params, timeout=30)
     time.sleep(REQUEST_DELAY)
     r.raise_for_status()
     return r
 
+# ================= UNPAYWALL ================= #
+def query_unpaywall(doi):
+    url = f"https://api.unpaywall.org/v2/{doi}"
+    r = requests.get(url, params={"email": UNPAYWALL_EMAIL}, timeout=20)
+    return r.json() if r.status_code == 200 else None
+
+def extract_pdf_from_html(url):
+    r = requests.get(url, headers=HEADERS, timeout=20)
+    soup = BeautifulSoup(r.text, "lxml")
+
+    meta = soup.find("meta", {"name": "citation_pdf_url"})
+    if meta:
+        return meta.get("content")
+
+    for a in soup.find_all("a", href=True):
+        if ".pdf" in a["href"].lower():
+            return a["href"]
+    return None
+
+# ================= PMC ================= #
 def pmc_search(query):
     r = ncbi_get(
         "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
         {"db": "pmc", "term": query, "retmode": "json", "retmax": 1}
     )
-    ids = r.json().get("esearchresult", {}).get("idlist", [])
+    ids = r.json()["esearchresult"]["idlist"]
     return ids[0] if ids else None
 
-def pmc_fetch_metadata(pmcid):
+def pmc_metadata(pmcid):
     r = ncbi_get(
         "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
         {"db": "pmc", "id": pmcid, "retmode": "json"}
@@ -100,125 +102,123 @@ def pmc_fetch_metadata(pmcid):
         "Title": doc.get("title"),
         "Journal": doc.get("fulljournalname"),
         "Year": doc.get("pubdate", "")[:4],
-        "DOI": doc.get("elocationid", "").replace("doi:", "")
+        "DOI": doc.get("elocationid", "").replace("doi:", ""),
+        "PMCID": f"PMC{pmcid}"
     }
 
 def download_pmc_pdf(pmcid):
-    pdf_url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmcid}/pdf/"
-    pdf_path = PDF_DIR / f"PMC{pmcid}.pdf"
-    r = requests.get(pdf_url, stream=True, timeout=30)
-    if r.status_code == 200 and "application/pdf" in r.headers.get("Content-Type", ""):
-        with open(pdf_path, "wb") as f:
-            for chunk in r.iter_content(8192):
-                f.write(chunk)
-        return pdf_path
-    return None
+    url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/pdf/"
+    path = PDF_DIR / f"{pmcid}.pdf"
+    r = requests.get(url, headers=HEADERS, timeout=30)
+    if r.status_code == 200 and "pdf" in r.headers.get("Content-Type", ""):
+        path.write_bytes(r.content)
+        return True
+    return False
 
-# ================= RESULTS ================= #
-if st.session_state.refs:
+# ================= PROCESS ================= #
+if st.button("🔍 Process"):
 
-    st.markdown("## 🔗 Results")
+    lines = [l.strip() for l in input_text.splitlines() if l.strip()]
+    results = []
 
-    for i, ref in enumerate(st.session_state.refs):
+    progress = st.progress(0)
 
-        scholar_url = f"https://scholar.google.com/scholar?q={quote(ref)}"
-        pmc_url = f"https://www.ncbi.nlm.nih.gov/pmc/?term={quote(ref)}"
+    for i, item in enumerate(lines):
 
-        col1, col2 = st.columns([7, 2])
+        record = {
+            "Input": item,
+            "Type": "DOI" if is_doi(item) else "Reference",
+            "Title": "",
+            "Journal": "",
+            "Year": "",
+            "DOI": "",
+            "PMCID": "",
+            "OA": "No",
+            "PDF": ""
+        }
 
-        with col1:
-            st.markdown(
-                f"""
-                <div class="ref-card">
-                    <strong>{i+1}.</strong> {ref}
-                    <div class="links">
-                        <a href="{scholar_url}" target="_blank">🔍 Scholar</a>
-                        <a href="{pmc_url}" target="_blank">📖 PMC</a>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+        scholar_url = f"https://scholar.google.com/scholar?q={quote(item)}"
+        pmc_search_url = f"https://www.ncbi.nlm.nih.gov/pmc/?term={quote(item)}"
 
-            if i not in st.session_state.metadata:
-                pmcid = pmc_search(ref)
-                if pmcid:
-                    meta = pmc_fetch_metadata(pmcid)
-                    meta["PMCID"] = f"PMC{pmcid}"
-                    st.session_state.metadata[i] = meta
-                else:
-                    st.session_state.metadata[i] = None
+        # ---------- DOI FLOW ----------
+        if is_doi(item):
+            doi = clean_doi(item)
+            record["DOI"] = doi
+            data = query_unpaywall(doi)
 
-            meta = st.session_state.metadata[i]
+            if data and data.get("is_oa"):
+                loc = data.get("best_oa_location")
+                pdf_url = loc.get("url_for_pdf") or extract_pdf_from_html(loc.get("url"))
 
-            if meta:
-                st.write(
-                    f"**{meta['Title']}**  \n"
-                    f"{meta['Journal']} ({meta['Year']})  \n"
-                    f"PMCID: {meta['PMCID']} | DOI: {meta['DOI'] or 'N/A'}"
-                )
+                if pdf_url:
+                    pdf_path = PDF_DIR / f"{doi.replace('/', '_')}.pdf"
+                    r = requests.get(pdf_url, headers=HEADERS, timeout=30)
+                    if r.status_code == 200 and "pdf" in r.headers.get("Content-Type", ""):
+                        pdf_path.write_bytes(r.content)
+                        record["OA"] = "Yes"
+                        record["PDF"] = str(pdf_path)
 
-                if st.button("⬇️ Download PDF", key=f"dl_{i}"):
-                    pdf = download_pmc_pdf(meta["PMCID"].replace("PMC", ""))
-                    if pdf:
-                        st.success("Downloaded")
-                        st.markdown(f"[📄 Open PDF](sandbox:/{pdf})")
-                    else:
-                        st.warning("PDF not available")
+        # ---------- REFERENCE FLOW ----------
+        else:
+            pmcid = pmc_search(item)
+            if pmcid:
+                meta = pmc_metadata(pmcid)
+                record.update(meta)
+                if download_pmc_pdf(meta["PMCID"]):
+                    record["OA"] = "Yes"
+                    record["PDF"] = str(PDF_DIR / f"{meta['PMCID']}.pdf")
 
-            else:
-                st.info("No OA article found")
+        record["Scholar"] = scholar_url
+        record["PMC_Search"] = pmc_search_url
+        results.append(record)
+        progress.progress((i + 1) / len(lines))
 
-        with col2:
-            st.checkbox(
-                "Reviewed",
-                key=f"rev_{i}",
-                value=st.session_state.reviewed.get(i),
-                on_change=lambda idx=i: st.session_state.reviewed.update(
-                    {idx: not st.session_state.reviewed[idx]}
-                )
-            )
+    st.session_state.results = results
 
-    # ================= BULK DOWNLOAD ================= #
-    st.markdown("---")
-    if st.button("⬇️ Bulk Download All OA PDFs"):
-        for meta in st.session_state.metadata.values():
-            if meta:
-                download_pmc_pdf(meta["PMCID"].replace("PMC", ""))
-        st.success("Bulk download complete")
+# ================= DISPLAY ================= #
+if st.session_state.results:
 
-    # ================= ZIP EXPORT ================= #
-    zip_path = BASE_DIR / "pmc_pdfs.zip"
-    if st.button("📦 Create ZIP"):
-        with zipfile.ZipFile(zip_path, "w") as zipf:
-            for pdf in PDF_DIR.glob("*.pdf"):
-                zipf.write(pdf, pdf.name)
-        st.success("ZIP ready")
-        st.markdown(f"[⬇️ Download ZIP](sandbox:/{zip_path})")
+    df = pd.DataFrame(st.session_state.results)
 
-    # ================= CSV EXPORT ================= #
-    st.markdown("## 📤 Export CSV")
+    st.success("✅ Processing complete")
 
-    rows = []
-    for i, ref in enumerate(st.session_state.refs):
-        meta = st.session_state.metadata.get(i)
-        rows.append({
-            "Reference": ref,
-            "Reviewed": st.session_state.reviewed[i],
-            "PMCID": meta["PMCID"] if meta else "",
-            "DOI": meta["DOI"] if meta else "",
-            "Title": meta["Title"] if meta else "",
-            "Journal": meta["Journal"] if meta else "",
-            "Year": meta["Year"] if meta else ""
-        })
+    st.dataframe(
+        df,
+        use_container_width=True,
+        column_config={
+            "Scholar": st.column_config.LinkColumn("Scholar"),
+            "PMC_Search": st.column_config.LinkColumn("PMC")
+        }
+    )
 
-    df = pd.DataFrame(rows)
-    csv_path = BASE_DIR / "review_status.csv"
-    df.to_csv(csv_path, index=False)
+    # ---------- EXPORTS ----------
+    st.markdown("### 📤 Exports")
 
     st.download_button(
         "⬇️ Download CSV",
-        data=df.to_csv(index=False),
-        file_name="review_status.csv",
-        mime="text/csv"
+        df.to_csv(index=False),
+        "oa_results.csv",
+        "text/csv"
     )
+
+    zip_path = BASE_DIR / "oa_pdfs.zip"
+    with zipfile.ZipFile(zip_path, "w") as z:
+        for pdf in PDF_DIR.glob("*.pdf"):
+            z.write(pdf, pdf.name)
+
+    with open(zip_path, "rb") as f:
+        st.download_button(
+            "📦 Download PDFs (ZIP)",
+            f,
+            "oa_pdfs.zip",
+            "application/zip"
+        )
+
+# ================= FOOTER ================= #
+st.markdown(
+    """
+    ---
+    **Sources:** Unpaywall • PubMed Central • Google Scholar  
+    **Compliance:** Legal Open Access only
+    """
+)
