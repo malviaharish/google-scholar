@@ -17,7 +17,8 @@ st.set_page_config(
 # ================= CONFIG ================= #
 NCBI_API_KEY = st.secrets.get("NCBI_API_KEY")
 UNPAYWALL_EMAIL = st.secrets.get("UNPAYWALL_EMAIL")
-
+DOWNLOAD_DIR = Path("downloads")
+DOWNLOAD_DIR.mkdir(exist_ok=True)
 REQUEST_DELAY = 0.34  # NCBI safe with API key
 
 BASE_DIR = Path("output")
@@ -26,9 +27,10 @@ BASE_DIR.mkdir(exist_ok=True)
 PDF_DIR.mkdir(exist_ok=True)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     "Accept": "application/pdf,text/html"
 }
+
 
 # ================= SESSION ================= #
 if "items" not in st.session_state:
