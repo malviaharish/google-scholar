@@ -3,20 +3,25 @@ import requests
 import pandas as pd
 from pathlib import Path
 import zipfile
-import re
 import time
 from bs4 import BeautifulSoup
 from urllib.parse import quote, urljoin
+from requests.exceptions import RequestException, ConnectTimeout, ReadTimeout
 
 # ================= CONFIG ================= #
 
-UNPAYWALL_EMAIL = "your_email@institute.edu"   # REQUIRED
+UNPAYWALL_EMAIL = "your_real_email@institute.edu"  # REQUIRED
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/pdf,text/html"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/pdf,application/octet-stream,*/*",
+    "Referer": "https://www.ncbi.nlm.nih.gov/"
 }
 
 # ================= UI ================= #
@@ -35,10 +40,10 @@ input_text = st.text_area(
 st.markdown("""
 <style>
 table { width:100%; border-collapse:collapse; }
-th, td { 
-    text-align:center !important; 
-    padding:8px; 
-    vertical-align:middle; 
+th, td {
+    text-align:center !important;
+    padding:8px;
+    vertical-align:middle;
 }
 th { background:#f1f5f9; font-weight:700; }
 </style>
@@ -72,89 +77,118 @@ def make_btn(url, label, color="#2563eb"):
 # ================= EUROPE PMC ================= #
 
 def europe_pmc(query):
-    r = requests.get(
-        "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
-        params={"query": query, "format": "json", "pageSize": 1},
-        timeout=20
-    )
-    hits = r.json().get("resultList", {}).get("result", [])
-    if not hits:
+    try:
+        r = requests.get(
+            "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+            params={"query": query, "format": "json", "pageSize": 1},
+            timeout=15
+        )
+        hits = r.json().get("resultList", {}).get("result", [])
+        if not hits:
+            return {}
+        h = hits[0]
+        return {
+            "Title": h.get("title", ""),
+            "Journal": h.get("journalTitle", ""),
+            "Year": h.get("pubYear", ""),
+            "Authors": h.get("authorString", ""),
+            "DOI": h.get("doi", ""),
+            "PMID": h.get("pmid", ""),
+            "PMCID": h.get("pmcid", "")
+        }
+    except Exception:
         return {}
-    h = hits[0]
-    return {
-        "Title": h.get("title",""),
-        "Journal": h.get("journalTitle",""),
-        "Year": h.get("pubYear",""),
-        "Authors": h.get("authorString",""),
-        "DOI": h.get("doi",""),
-        "PMID": h.get("pmid",""),
-        "PMCID": h.get("pmcid","")
-    }
 
 # ================= ID CROSSWALK ================= #
 
 def id_crosswalk(val):
-    r = requests.get(
-        "https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/",
-        params={"ids": val, "format": "json"},
-        timeout=15
-    )
-    recs = r.json().get("records", [])
-    if not recs:
+    try:
+        r = requests.get(
+            "https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/",
+            params={"ids": val, "format": "json"},
+            timeout=10
+        )
+        recs = r.json().get("records", [])
+        if not recs:
+            return {}
+        r0 = recs[0]
+        return {
+            "PMID": r0.get("pmid", ""),
+            "PMCID": r0.get("pmcid", ""),
+            "DOI": r0.get("doi", "")
+        }
+    except Exception:
         return {}
-    r0 = recs[0]
-    return {
-        "PMID": r0.get("pmid",""),
-        "PMCID": r0.get("pmcid",""),
-        "DOI": r0.get("doi","")
-    }
 
 # ================= CROSSREF ================= #
 
 def crossref(doi):
-    r = requests.get(f"https://api.crossref.org/works/{doi}", timeout=15)
-    if r.status_code != 200:
+    try:
+        r = requests.get(f"https://api.crossref.org/works/{doi}", timeout=10)
+        if r.status_code != 200:
+            return {}
+        m = r.json()["message"]
+        return {
+            "Title": m.get("title", [""])[0],
+            "Journal": m.get("container-title", [""])[0],
+            "Year": str(m.get("issued", {}).get("date-parts", [[None]])[0][0]),
+            "Authors": ", ".join(
+                f"{a.get('family','')} {a.get('given','')}"
+                for a in m.get("author", [])
+            )
+        }
+    except Exception:
         return {}
-    m = r.json()["message"]
-    return {
-        "Title": m.get("title",[""])[0],
-        "Journal": m.get("container-title",[""])[0],
-        "Year": str(m.get("issued",{}).get("date-parts",[[None]])[0][0]),
-        "Authors": ", ".join(
-            f"{a.get('family','')} {a.get('given','')}"
-            for a in m.get("author",[])
-        )
-    }
 
 # ================= UNPAYWALL ================= #
 
 def unpaywall(doi):
-    r = requests.get(
-        f"https://api.unpaywall.org/v2/{doi}",
-        params={"email": UNPAYWALL_EMAIL},
-        timeout=15
-    )
-    return r.json() if r.status_code == 200 else {}
+    try:
+        r = requests.get(
+            f"https://api.unpaywall.org/v2/{doi}",
+            params={"email": UNPAYWALL_EMAIL},
+            timeout=10
+        )
+        return r.json() if r.status_code == 200 else {}
+    except Exception:
+        return {}
+
+# ================= PDF EXTRACTION ================= #
 
 def extract_pdf(page):
     if not page:
         return None
-    r = requests.get(page, headers=HEADERS, timeout=20)
-    soup = BeautifulSoup(r.text, "lxml")
-    m = soup.find("meta", attrs={"name": "citation_pdf_url"})
-    if m:
-        return m["content"]
-    for a in soup.find_all("a", href=True):
-        if ".pdf" in a["href"].lower():
-            return urljoin(page, a["href"])
+    try:
+        r = requests.get(page, headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(r.text, "lxml")
+        m = soup.find("meta", attrs={"name": "citation_pdf_url"})
+        if m:
+            return m["content"]
+        for a in soup.find_all("a", href=True):
+            if ".pdf" in a["href"].lower():
+                return urljoin(page, a["href"])
+    except Exception:
+        return None
     return None
 
+# ================= PDF DOWNLOAD (SAFE) ================= #
+
 def download_pdf(url, fname):
-    r = requests.get(url, headers=HEADERS, timeout=30)
-    if r.status_code == 200 and "pdf" in r.headers.get("Content-Type",""):
-        (DOWNLOAD_DIR / fname).write_bytes(r.content)
-        return "Downloaded"
-    return "Failed"
+    try:
+        r = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=(10, 20),
+            allow_redirects=True
+        )
+        if r.status_code == 200:
+            (DOWNLOAD_DIR / fname).write_bytes(r.content)
+            return "Downloaded"
+        return f"HTTP {r.status_code}"
+    except (ConnectTimeout, ReadTimeout):
+        return "Timeout"
+    except RequestException:
+        return "Failed"
 
 # ================= RIS ================= #
 
@@ -170,8 +204,10 @@ def make_ris(df):
         for a in r["Authors"].split(","):
             if a.strip():
                 out.append(f"AU  - {a.strip()}")
-        if r["DOI"]: out.append(f"DO  - {r['DOI']}")
-        if r["PMID"]: out.append(f"PM  - {r['PMID']}")
+        if r["DOI"]:
+            out.append(f"DO  - {r['DOI']}")
+        if r["PMID"]:
+            out.append(f"PM  - {r['PMID']}")
         out += ["ER  -", ""]
     return "\n".join(out)
 
@@ -214,11 +250,11 @@ if st.button("🔍 Process"):
             ),
         }
 
-        rec.update({k:v for k,v in europe_pmc(x).items() if v})
+        rec.update({k: v for k, v in europe_pmc(x).items() if v})
 
-        for k in ["DOI","PMID","PMCID"]:
+        for k in ["DOI", "PMID", "PMCID"]:
             if rec.get(k):
-                rec.update({a:b for a,b in id_crosswalk(rec[k]).items() if b})
+                rec.update({a: b for a, b in id_crosswalk(rec[k]).items() if b})
 
         if rec.get("DOI") and not rec["Title"]:
             rec.update(crossref(rec["DOI"]))
@@ -227,23 +263,20 @@ if st.button("🔍 Process"):
             up = unpaywall(rec["DOI"])
             if up.get("is_oa"):
                 loc = up.get("best_oa_location") or {}
-                pdf = loc.get("url_for_pdf") or extract_pdf(loc.get("url",""))
+                pdf = loc.get("url_for_pdf") or extract_pdf(loc.get("url", ""))
                 if pdf:
                     rec["OA"] = "Yes"
                     rec["PDF"] = make_btn(pdf, "📄 PDF", "#dc2626")
-                    rec["Status"] = download_pdf(
-                        pdf,
-                        rec["DOI"].replace("/","_") + ".pdf"
-                    )
+                    fname = rec["DOI"].replace("/", "_") + f"_{int(time.time())}.pdf"
+                    rec["Status"] = download_pdf(pdf, fname)
 
         rows.append(rec)
-        prog.progress((i+1)/len(lines))
-        time.sleep(0.2)
+        prog.progress((i + 1) / len(lines))
+        time.sleep(0.1)
 
     df = pd.DataFrame(rows)
 
     st.success("✅ Completed")
-
     st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
 
     # ================= EXPORT ================= #
