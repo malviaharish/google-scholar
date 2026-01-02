@@ -26,7 +26,7 @@ HEADERS = {
 
 st.set_page_config("Literature OA Downloader", layout="wide")
 st.title("📚 Reference / DOI → Open Access PDF Downloader")
-st.caption("PubMed • Crossref • Unpaywall | 100% Legal Open Access")
+st.caption("PubMed • Crossref • Unpaywall ")
 
 input_text = st.text_area(
     "Paste DOI / PMID / Reference (one per line)",
