@@ -25,8 +25,8 @@ HEADERS = {
 # ================= UI ================= #
 
 st.set_page_config("Literature OA Downloader", layout="wide")
-st.title("📚 Reference / DOI → Open Access PDF Downloader")
-st.caption("PubMed • Crossref • Unpaywall ")
+st.title("📚 Reference / DOI / PMID → Open Access PDF Downloader")
+st.caption("Primary source: PubMed | Fallback: Crossref | OA: Unpaywall")
 
 input_text = st.text_area(
     "Paste DOI / PMID / Reference (one per line)",
@@ -105,7 +105,6 @@ def pubmed_fetch(pmid):
             timeout=10
         )
         soup = BeautifulSoup(r.text, "lxml")
-
         article = soup.find("pubmedarticle")
         if not article:
             return {}
@@ -151,7 +150,7 @@ def id_crosswalk(val):
     except Exception:
         return {}
 
-# ================= CROSSREF (FALLBACK) ================= #
+# ================= CROSSREF (LAST RESORT) ================= #
 
 def crossref(doi):
     try:
@@ -216,27 +215,6 @@ def download_pdf(url, fname):
     except RequestException:
         return "Failed"
 
-# ================= RIS ================= #
-
-def make_ris(df):
-    out = []
-    for _, r in df.iterrows():
-        out += [
-            "TY  - JOUR",
-            f"TI  - {r['Title']}",
-            f"JO  - {r['Journal']}",
-            f"PY  - {r['Year']}",
-        ]
-        for a in r["Authors"].split(","):
-            if a.strip():
-                out.append(f"AU  - {a.strip()}")
-        if r["DOI"]:
-            out.append(f"DO  - {r['DOI']}")
-        if r["PMID"]:
-            out.append(f"PM  - {r['PMID']}")
-        out += ["ER  -", ""]
-    return "\n".join(out)
-
 # ================= MAIN ================= #
 
 if st.button("🔍 Process"):
@@ -259,29 +237,32 @@ if st.button("🔍 Process"):
             "OA": "No",
             "PDF": "",
             "Status": "",
-            "Google Scholar": make_btn(
+            "Scholar": make_btn(
                 f"https://scholar.google.com/scholar?q={quote(x)}",
-                "Scholar",
-                "#1a73e8"
+                "Scholar"
             ),
             "PubMed": make_btn(
                 f"https://pubmed.ncbi.nlm.nih.gov/?term={quote(x)}",
                 "PubMed",
                 "#059669"
-            ),
+            )
         }
 
+        # ---- PubMed first ----
         pmid = pubmed_search(x)
         if pmid:
             rec.update(pubmed_fetch(pmid))
 
-        for k in ["DOI", "PMID"]:
+        # ---- ID crosswalk ----
+        for k in ["PMID", "DOI"]:
             if rec.get(k):
                 rec.update({a: b for a, b in id_crosswalk(rec[k]).items() if b})
 
+        # ---- Crossref only if PubMed missing ----
         if rec.get("DOI") and not rec["Title"]:
             rec.update(crossref(rec["DOI"]))
 
+        # ---- Unpaywall ----
         if rec.get("DOI"):
             up = unpaywall(rec["DOI"])
             if up.get("is_oa"):
@@ -301,20 +282,3 @@ if st.button("🔍 Process"):
 
     st.success("✅ Completed")
     st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
-
-    df.to_csv("results.csv", index=False)
-    Path("references.ris").write_text(make_ris(df), encoding="utf-8")
-
-    with zipfile.ZipFile("literature_results.zip", "w") as z:
-        z.write("results.csv")
-        z.write("references.ris")
-        for pdf in DOWNLOAD_DIR.glob("*.pdf"):
-            z.write(pdf, f"oa_pdfs/{pdf.name}")
-
-    with open("literature_results.zip", "rb") as f:
-        st.download_button(
-            "📦 Download ALL (CSV + RIS + PDFs)",
-            f,
-            file_name="literature_results.zip",
-            mime="application/zip"
-        )
