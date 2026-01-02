@@ -7,10 +7,11 @@ import time
 from bs4 import BeautifulSoup
 from urllib.parse import quote, urljoin
 from requests.exceptions import RequestException, ConnectTimeout, ReadTimeout
+import re
 
 # ================= CONFIG ================= #
 
-UNPAYWALL_EMAIL = "your_real_email@institute.edu"  # REQUIRED
+UNPAYWALL_EMAIL = "your_real_email@institute.edu"   # REQUIRED
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
@@ -66,40 +67,44 @@ def make_btn(url, label, color="#2563eb"):
        color:white;
        font-weight:600;
        text-decoration:none;
-       font-size:13px;
-       ">
+       font-size:13px;">
        {label}
     </a>
     """
 
-def extract_title(ref):
-    if "." in ref:
-        parts = ref.split(".")
-        if len(parts) > 1:
-            return parts[1].strip()
-    return ref
+def is_doi(text):
+    return bool(re.match(r"^10\.\d{4,9}/[-._;()/:A-Z0-9]+$", text, re.I))
+
+def is_pmid(text):
+    return text.isdigit()
 
 # ================= PUBMED SEARCH ================= #
 
 def pubmed_search(query):
     try:
-        title = extract_title(query)
+        if is_doi(query):
+            term = f"{query}[DOI]"
+        else:
+            term = f"{query}[Title]"
+
         r = requests.get(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
             params={
                 "db": "pubmed",
-                "term": f"{title}[Title]",
+                "term": term,
                 "retmode": "json",
-                "retmax": 5
+                "retmax": 1
             },
             timeout=10
         )
+
         ids = r.json().get("esearchresult", {}).get("idlist", [])
         return ids[0] if ids else None
+
     except Exception:
         return None
 
-# ================= PUBMED FETCH (ROBUST XML PARSER) ================= #
+# ================= PUBMED FETCH ================= #
 
 def pubmed_fetch(pmid):
     try:
@@ -114,31 +119,24 @@ def pubmed_fetch(pmid):
         if not article:
             return {}
 
-        # Title
         title = article.find("articletitle")
         title = title.text.strip() if title else ""
 
-        # Journal
         journal = ""
         journal_tag = article.find("journal")
         if journal_tag and journal_tag.find("title"):
             journal = journal_tag.find("title").text.strip()
 
-        # Year
         year = ""
         pubdate = article.find("pubdate")
         if pubdate and pubdate.find("year"):
             year = pubdate.find("year").text.strip()
 
-        # Authors
         authors = []
         for a in article.find_all("author"):
             if a.find("lastname") and a.find("forename"):
-                authors.append(
-                    f"{a.find('lastname').text} {a.find('forename').text}"
-                )
+                authors.append(f"{a.find('lastname').text} {a.find('forename').text}")
 
-        # IDs
         doi, pmcid = "", ""
         for aid in article.find_all("articleid"):
             if aid.get("idtype") == "doi":
@@ -188,41 +186,6 @@ def extract_pdf(page):
         return None
     return None
 
-# ================= DOWNLOAD ================= #
-
-def download_pdf(url, fname):
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=(10, 20))
-        if r.status_code == 200:
-            (DOWNLOAD_DIR / fname).write_bytes(r.content)
-            return "Downloaded"
-        return f"HTTP {r.status_code}"
-    except (ConnectTimeout, ReadTimeout):
-        return "Timeout"
-    except RequestException:
-        return "Failed"
-
-# ================= RIS ================= #
-
-def make_ris(df):
-    out = []
-    for _, r in df.iterrows():
-        out += [
-            "TY  - JOUR",
-            f"TI  - {r['Title']}",
-            f"JO  - {r['Journal']}",
-            f"PY  - {r['Year']}",
-        ]
-        for a in r["Authors"].split(","):
-            if a.strip():
-                out.append(f"AU  - {a.strip()}")
-        if r["DOI"]:
-            out.append(f"DO  - {r['DOI']}")
-        if r["PMID"]:
-            out.append(f"PM  - {r['PMID']}")
-        out += ["ER  -", ""]
-    return "\n".join(out)
-
 # ================= MAIN ================= #
 
 if st.button("🔍 Process"):
@@ -245,30 +208,29 @@ if st.button("🔍 Process"):
             "OA": "No",
             "PDF": "",
             "Status": "",
-            "Scholar": make_btn(
-                f"https://scholar.google.com/scholar?q={quote(x)}",
-                "Scholar",
-                "#1a73e8"
-            ),
-            "PubMed": make_btn(
-                f"https://pubmed.ncbi.nlm.nih.gov/?term={quote(x)}",
-                "PubMed",
-                "#059669"
-            ),
+            "Scholar": make_btn(f"https://scholar.google.com/scholar?q={quote(x)}", "Scholar"),
+            "PubMed": make_btn(f"https://pubmed.ncbi.nlm.nih.gov/?term={quote(x)}", "PubMed"),
         }
 
-        pmid = pubmed_search(x)
+        if is_pmid(x):
+            pmid = x
+        else:
+            pmid = pubmed_search(x)
+
         if pmid:
             rec.update(pubmed_fetch(pmid))
 
-        # ===== PMC OA DETECTION =====
+        # ===== PMC OA =====
         if rec.get("PMCID"):
             rec["OA"] = "Yes"
-            pmc_pdf = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{rec['PMCID']}/pdf/"
-            rec["PDF"] = make_btn(pmc_pdf, "📄 PMC PDF", "#7c3aed")
+            rec["PDF"] = make_btn(
+                f"https://www.ncbi.nlm.nih.gov/pmc/articles/{rec['PMCID']}/pdf/",
+                "📄 PMC PDF",
+                "#7c3aed"
+            )
             rec["Status"] = "PMC Open Access"
 
-        # ===== UNPAYWALL (IF NOT PMC) =====
+        # ===== UNPAYWALL =====
         if rec.get("DOI") and rec["OA"] == "No":
             up = unpaywall(rec["DOI"])
             if up.get("is_oa"):
@@ -277,33 +239,12 @@ if st.button("🔍 Process"):
                 if pdf:
                     rec["OA"] = "Yes"
                     rec["PDF"] = make_btn(pdf, "📄 PDF", "#dc2626")
-                    fname = rec["DOI"].replace("/", "_") + f"_{int(time.time())}.pdf"
-                    rec["Status"] = download_pdf(pdf, fname)
+                    rec["Status"] = "Unpaywall OA"
 
         rows.append(rec)
         prog.progress((i + 1) / len(lines))
         time.sleep(0.05)
 
     df = pd.DataFrame(rows)
-
     st.success("✅ Completed")
     st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
-
-    # ================= EXPORT ================= #
-
-    df.to_csv("results.csv", index=False)
-    Path("references.ris").write_text(make_ris(df), encoding="utf-8")
-
-    with zipfile.ZipFile("literature_results.zip", "w") as z:
-        z.write("results.csv")
-        z.write("references.ris")
-        for pdf in DOWNLOAD_DIR.glob("*.pdf"):
-            z.write(pdf, f"oa_pdfs/{pdf.name}")
-
-    with open("literature_results.zip", "rb") as f:
-        st.download_button(
-            "📦 Download ALL (CSV + RIS + PDFs)",
-            f,
-            file_name="literature_results.zip",
-            mime="application/zip"
-        )
