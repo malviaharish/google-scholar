@@ -25,8 +25,8 @@ HEADERS = {
 # ================= UI ================= #
 
 st.set_page_config("Literature OA Downloader", layout="wide")
-st.title("📚 Reference / DOI / PMID → Open Access PDF Downloader")
-st.caption("Primary source: PubMed | Fallback: Crossref | OA: Unpaywall")
+st.title("📚 Reference / DOI → Open Access PDF Downloader")
+st.caption("Primary source: PubMed | OA: PubMed Central → Unpaywall")
 
 input_text = st.text_area(
     "Paste DOI / PMID / Reference (one per line)",
@@ -72,17 +72,25 @@ def make_btn(url, label, color="#2563eb"):
     </a>
     """
 
+def extract_title(ref):
+    if "." in ref:
+        parts = ref.split(".")
+        if len(parts) > 1:
+            return parts[1].strip()
+    return ref
+
 # ================= PUBMED SEARCH ================= #
 
 def pubmed_search(query):
     try:
+        title = extract_title(query)
         r = requests.get(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
             params={
                 "db": "pubmed",
-                "term": query,
+                "term": f"{title}[Title]",
                 "retmode": "json",
-                "retmax": 1
+                "retmax": 5
             },
             timeout=10
         )
@@ -91,82 +99,63 @@ def pubmed_search(query):
     except Exception:
         return None
 
-# ================= PUBMED FETCH ================= #
+# ================= PUBMED FETCH (ROBUST XML PARSER) ================= #
 
 def pubmed_fetch(pmid):
     try:
         r = requests.get(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
-            params={
-                "db": "pubmed",
-                "id": pmid,
-                "retmode": "xml"
-            },
+            params={"db": "pubmed", "id": pmid, "retmode": "xml"},
             timeout=10
         )
+
         soup = BeautifulSoup(r.text, "lxml")
         article = soup.find("pubmedarticle")
         if not article:
             return {}
 
+        # Title
         title = article.find("articletitle")
-        journal = article.find("title")
-        year = article.find("pubdate")
-        authors = article.find_all("author")
-        doi = article.find("articleid", {"idtype": "doi"})
+        title = title.text.strip() if title else ""
+
+        # Journal
+        journal = ""
+        journal_tag = article.find("journal")
+        if journal_tag and journal_tag.find("title"):
+            journal = journal_tag.find("title").text.strip()
+
+        # Year
+        year = ""
+        pubdate = article.find("pubdate")
+        if pubdate and pubdate.find("year"):
+            year = pubdate.find("year").text.strip()
+
+        # Authors
+        authors = []
+        for a in article.find_all("author"):
+            if a.find("lastname") and a.find("forename"):
+                authors.append(
+                    f"{a.find('lastname').text} {a.find('forename').text}"
+                )
+
+        # IDs
+        doi, pmcid = "", ""
+        for aid in article.find_all("articleid"):
+            if aid.get("idtype") == "doi":
+                doi = aid.text.strip()
+            elif aid.get("idtype") == "pmc":
+                pmcid = aid.text.strip()
 
         return {
-            "Title": title.text if title else "",
-            "Journal": journal.text if journal else "",
-            "Year": year.year.text if year and year.year else "",
-            "Authors": ", ".join(
-                f"{a.lastname.text} {a.forename.text}"
-                for a in authors if a.lastname and a.forename
-            ),
+            "Title": title,
+            "Journal": journal,
+            "Year": year,
+            "Authors": ", ".join(authors),
             "PMID": pmid,
-            "DOI": doi.text if doi else ""
+            "DOI": doi,
+            "PMCID": pmcid
         }
-    except Exception:
-        return {}
 
-# ================= ID CROSSWALK ================= #
-
-def id_crosswalk(val):
-    try:
-        r = requests.get(
-            "https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/",
-            params={"ids": val, "format": "json"},
-            timeout=10
-        )
-        recs = r.json().get("records", [])
-        if not recs:
-            return {}
-        r0 = recs[0]
-        return {
-            "PMCID": r0.get("pmcid", ""),
-            "DOI": r0.get("doi", ""),
-            "PMID": r0.get("pmid", "")
-        }
-    except Exception:
-        return {}
-
-# ================= CROSSREF (LAST RESORT) ================= #
-
-def crossref(doi):
-    try:
-        r = requests.get(f"https://api.crossref.org/works/{doi}", timeout=10)
-        if r.status_code != 200:
-            return {}
-        m = r.json()["message"]
-        return {
-            "Title": m.get("title", [""])[0],
-            "Journal": m.get("container-title", [""])[0],
-            "Year": str(m.get("issued", {}).get("date-parts", [[None]])[0][0]),
-            "Authors": ", ".join(
-                f"{a.get('family','')} {a.get('given','')}"
-                for a in m.get("author", [])
-            )
-        }
     except Exception:
         return {}
 
@@ -186,14 +175,12 @@ def unpaywall(doi):
 # ================= PDF EXTRACTION ================= #
 
 def extract_pdf(page):
-    if not page:
-        return None
     try:
         r = requests.get(page, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(r.text, "lxml")
-        m = soup.find("meta", attrs={"name": "citation_pdf_url"})
-        if m:
-            return m["content"]
+        meta = soup.find("meta", {"name": "citation_pdf_url"})
+        if meta:
+            return meta["content"]
         for a in soup.find_all("a", href=True):
             if ".pdf" in a["href"].lower():
                 return urljoin(page, a["href"])
@@ -214,6 +201,27 @@ def download_pdf(url, fname):
         return "Timeout"
     except RequestException:
         return "Failed"
+
+# ================= RIS ================= #
+
+def make_ris(df):
+    out = []
+    for _, r in df.iterrows():
+        out += [
+            "TY  - JOUR",
+            f"TI  - {r['Title']}",
+            f"JO  - {r['Journal']}",
+            f"PY  - {r['Year']}",
+        ]
+        for a in r["Authors"].split(","):
+            if a.strip():
+                out.append(f"AU  - {a.strip()}")
+        if r["DOI"]:
+            out.append(f"DO  - {r['DOI']}")
+        if r["PMID"]:
+            out.append(f"PM  - {r['PMID']}")
+        out += ["ER  -", ""]
+    return "\n".join(out)
 
 # ================= MAIN ================= #
 
@@ -239,31 +247,29 @@ if st.button("🔍 Process"):
             "Status": "",
             "Scholar": make_btn(
                 f"https://scholar.google.com/scholar?q={quote(x)}",
-                "Scholar"
+                "Scholar",
+                "#1a73e8"
             ),
             "PubMed": make_btn(
                 f"https://pubmed.ncbi.nlm.nih.gov/?term={quote(x)}",
                 "PubMed",
                 "#059669"
-            )
+            ),
         }
 
-        # ---- PubMed first ----
         pmid = pubmed_search(x)
         if pmid:
             rec.update(pubmed_fetch(pmid))
 
-        # ---- ID crosswalk ----
-        for k in ["PMID", "DOI"]:
-            if rec.get(k):
-                rec.update({a: b for a, b in id_crosswalk(rec[k]).items() if b})
+        # ===== PMC OA DETECTION =====
+        if rec.get("PMCID"):
+            rec["OA"] = "Yes"
+            pmc_pdf = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{rec['PMCID']}/pdf/"
+            rec["PDF"] = make_btn(pmc_pdf, "📄 PMC PDF", "#7c3aed")
+            rec["Status"] = "PMC Open Access"
 
-        # ---- Crossref only if PubMed missing ----
-        if rec.get("DOI") and not rec["Title"]:
-            rec.update(crossref(rec["DOI"]))
-
-        # ---- Unpaywall ----
-        if rec.get("DOI"):
+        # ===== UNPAYWALL (IF NOT PMC) =====
+        if rec.get("DOI") and rec["OA"] == "No":
             up = unpaywall(rec["DOI"])
             if up.get("is_oa"):
                 loc = up.get("best_oa_location") or {}
@@ -276,9 +282,28 @@ if st.button("🔍 Process"):
 
         rows.append(rec)
         prog.progress((i + 1) / len(lines))
-        time.sleep(0.1)
+        time.sleep(0.05)
 
     df = pd.DataFrame(rows)
 
     st.success("✅ Completed")
     st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
+
+    # ================= EXPORT ================= #
+
+    df.to_csv("results.csv", index=False)
+    Path("references.ris").write_text(make_ris(df), encoding="utf-8")
+
+    with zipfile.ZipFile("literature_results.zip", "w") as z:
+        z.write("results.csv")
+        z.write("references.ris")
+        for pdf in DOWNLOAD_DIR.glob("*.pdf"):
+            z.write(pdf, f"oa_pdfs/{pdf.name}")
+
+    with open("literature_results.zip", "rb") as f:
+        st.download_button(
+            "📦 Download ALL (CSV + RIS + PDFs)",
+            f,
+            file_name="literature_results.zip",
+            mime="application/zip"
+        )
