@@ -19,19 +19,17 @@ HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/pdf,application/octet-stream,*/*",
-    "Referer": "https://www.ncbi.nlm.nih.gov/"
+    )
 }
 
 # ================= UI ================= #
 
 st.set_page_config("Literature OA Downloader", layout="wide")
 st.title("📚 Reference / DOI → Open Access PDF Downloader")
-st.caption("Europe PMC • PMC • Crossref • Unpaywall | 100% Legal Open Access")
+st.caption("PubMed • Crossref • Unpaywall | 100% Legal Open Access")
 
 input_text = st.text_area(
-    "Paste DOI / PMID / PMCID / Reference (one per line)",
+    "Paste DOI / PMID / Reference (one per line)",
     height=220
 )
 
@@ -74,27 +72,60 @@ def make_btn(url, label, color="#2563eb"):
     </a>
     """
 
-# ================= EUROPE PMC ================= #
+# ================= PUBMED SEARCH ================= #
 
-def europe_pmc(query):
+def pubmed_search(query):
     try:
         r = requests.get(
-            "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
-            params={"query": query, "format": "json", "pageSize": 1},
-            timeout=15
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+            params={
+                "db": "pubmed",
+                "term": query,
+                "retmode": "json",
+                "retmax": 1
+            },
+            timeout=10
         )
-        hits = r.json().get("resultList", {}).get("result", [])
-        if not hits:
+        ids = r.json().get("esearchresult", {}).get("idlist", [])
+        return ids[0] if ids else None
+    except Exception:
+        return None
+
+# ================= PUBMED FETCH ================= #
+
+def pubmed_fetch(pmid):
+    try:
+        r = requests.get(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+            params={
+                "db": "pubmed",
+                "id": pmid,
+                "retmode": "xml"
+            },
+            timeout=10
+        )
+        soup = BeautifulSoup(r.text, "lxml")
+
+        article = soup.find("pubmedarticle")
+        if not article:
             return {}
-        h = hits[0]
+
+        title = article.find("articletitle")
+        journal = article.find("title")
+        year = article.find("pubdate")
+        authors = article.find_all("author")
+        doi = article.find("articleid", {"idtype": "doi"})
+
         return {
-            "Title": h.get("title", ""),
-            "Journal": h.get("journalTitle", ""),
-            "Year": h.get("pubYear", ""),
-            "Authors": h.get("authorString", ""),
-            "DOI": h.get("doi", ""),
-            "PMID": h.get("pmid", ""),
-            "PMCID": h.get("pmcid", "")
+            "Title": title.text if title else "",
+            "Journal": journal.text if journal else "",
+            "Year": year.year.text if year and year.year else "",
+            "Authors": ", ".join(
+                f"{a.lastname.text} {a.forename.text}"
+                for a in authors if a.lastname and a.forename
+            ),
+            "PMID": pmid,
+            "DOI": doi.text if doi else ""
         }
     except Exception:
         return {}
@@ -113,14 +144,14 @@ def id_crosswalk(val):
             return {}
         r0 = recs[0]
         return {
-            "PMID": r0.get("pmid", ""),
             "PMCID": r0.get("pmcid", ""),
-            "DOI": r0.get("doi", "")
+            "DOI": r0.get("doi", ""),
+            "PMID": r0.get("pmid", "")
         }
     except Exception:
         return {}
 
-# ================= CROSSREF ================= #
+# ================= CROSSREF (FALLBACK) ================= #
 
 def crossref(doi):
     try:
@@ -171,16 +202,11 @@ def extract_pdf(page):
         return None
     return None
 
-# ================= PDF DOWNLOAD (SAFE) ================= #
+# ================= DOWNLOAD ================= #
 
 def download_pdf(url, fname):
     try:
-        r = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=(10, 20),
-            allow_redirects=True
-        )
+        r = requests.get(url, headers=HEADERS, timeout=(10, 20))
         if r.status_code == 200:
             (DOWNLOAD_DIR / fname).write_bytes(r.content)
             return "Downloaded"
@@ -243,16 +269,13 @@ if st.button("🔍 Process"):
                 "PubMed",
                 "#059669"
             ),
-            "PMC": make_btn(
-                f"https://www.ncbi.nlm.nih.gov/pmc/?term={quote(x)}",
-                "PMC",
-                "#7c3aed"
-            ),
         }
 
-        rec.update({k: v for k, v in europe_pmc(x).items() if v})
+        pmid = pubmed_search(x)
+        if pmid:
+            rec.update(pubmed_fetch(pmid))
 
-        for k in ["DOI", "PMID", "PMCID"]:
+        for k in ["DOI", "PMID"]:
             if rec.get(k):
                 rec.update({a: b for a, b in id_crosswalk(rec[k]).items() if b})
 
@@ -279,23 +302,16 @@ if st.button("🔍 Process"):
     st.success("✅ Completed")
     st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
 
-    # ================= EXPORT ================= #
+    df.to_csv("results.csv", index=False)
+    Path("references.ris").write_text(make_ris(df), encoding="utf-8")
 
-    csv_path = Path("results.csv")
-    ris_path = Path("references.ris")
-
-    df.to_csv(csv_path, index=False)
-    ris_path.write_text(make_ris(df), encoding="utf-8")
-
-    final_zip = Path("literature_results.zip")
-
-    with zipfile.ZipFile(final_zip, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(csv_path, "results.csv")
-        z.write(ris_path, "references.ris")
+    with zipfile.ZipFile("literature_results.zip", "w") as z:
+        z.write("results.csv")
+        z.write("references.ris")
         for pdf in DOWNLOAD_DIR.glob("*.pdf"):
             z.write(pdf, f"oa_pdfs/{pdf.name}")
 
-    with open(final_zip, "rb") as f:
+    with open("literature_results.zip", "rb") as f:
         st.download_button(
             "📦 Download ALL (CSV + RIS + PDFs)",
             f,
